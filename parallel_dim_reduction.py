@@ -163,11 +163,12 @@ class Parallel_Dimensionality_Reduction(object):
         xs_train = self.data_dict["xs_train"]
         Q = self.data_dict["Q"]
         alph = self.param_dict["alph"]
+        idx_train =self.data_dict["idx_train"]
 
         e1 = np.linalg.norm(metz - Zcon @ C)
         e1 = alph * e1 ** 2
 
-        KL_train = KL_divergence(xs_train, Q)
+        KL_train = KL_divergence(xs_train, Q)/len(idx_train)
         e2 = (1 - alph) * KL_train
 
         self.eval_dict["e1"] = e1
@@ -634,9 +635,13 @@ class Predict_From_Model(object):
         if validate is False:
             test_xs = model_data_dict["xs_test"]
             metz_test = model_data_dict["metz_test"]
+            idx_test =self.data_dict["idx_test"]
+
         if validate is True:
             test_xs = model_data_dict["xs_val"]
             metz_test = model_data_dict["metz_val"]
+            idx_test =self.data_dict["idx_test"]
+
         C = model_data_dict["C"]
         Z_train = model_data_dict["Z"]
         thet = model_data_dict["thet"]
@@ -655,7 +660,7 @@ class Predict_From_Model(object):
         Q = np.divide(Q.T, norms, where=norms != 0).T
         pred_dict["Q"] = Q
 
-        KL = KL_divergence(test_xs, Q)
+        KL = KL_divergence(test_xs, Q)/len(idx_test)
 
         pred_dict["xs_test"] = test_xs
         pred_dict["KL"] = KL
