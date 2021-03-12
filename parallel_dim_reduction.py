@@ -8,9 +8,12 @@ from openpyxl.utils.dataframe import dataframe_to_rows
 import openpyxl as pxl
 from sklearn.model_selection import train_test_split
 from scipy.ndimage import gaussian_filter1d
+import os
+import glob
 
 
 def KL_divergence(arr_1, arr_2):
+    # arr_1 is data, arr_2 is theory
     temp = np.ma.log(np.divide(arr_1, arr_2, where=arr_2 != 0).astype('float64'))
     temp = temp.filled(0)
     temp[np.isnan(temp)] = 0
@@ -62,6 +65,39 @@ def load_sheet_rows(sheet):
         new_dict = {key: pd.DataFrame(sheet.values).to_numpy() for key in keys}
 
     return new_dict
+
+def create_filetree(path_to_data_dir, path_to_dataset, model_type, further_spec=None):
+
+    parent_dir = lambda: os.chdir(os.path.dirname(os.getcwd()))
+
+    def conditional(directory):
+        try:
+            os.chdir(directory)
+        except:
+            os.mkdir(directory)
+            os.chdir(directory)
+
+    cd = os.getcwd()
+    os.chdir(path_to_data_dir)
+    f = os.path.basename(path_to_dataset)
+    (name, ext) = os.path.splitext(f)
+    conditional(name)
+    conditional(model_type)
+    if further_spec is not None:
+        conditional(further_spec)
+    arr = ["models", "predictions", "plots_and_figs"]
+    for path in arr:
+        conditional(path)
+        for k in range(6, 29):
+            conditional("nK=" + str(k))
+            for l in range(0, 11):
+                conditional("nL=" + str(l))
+                parent_dir()
+            parent_dir()
+        parent_dir()
+    os.chdir(cd)
+    
+    return name
 
 class Parallel_Dimensionality_Reduction(object):
 
@@ -271,35 +307,6 @@ class DataLoader(object):
         self.sg_met = sg_met
 
         return metz_train, metz_test, metz_val
-
-    def load_model(self, path):
-
-        wb = pxl.load_workbook(path, read_only=True)
-        names = wb.sheetnames[1:]
-        k = 0
-        if names[0].title == "params":
-            active_ws = wb[names[0]]
-            model_param_dict = load_sheet_rows(active_ws)
-            k += 1
-        else:
-            model_param_dict = {}
-        if names[1].title == "eval":
-            active_ws = wb[names[1]]
-            model_eval_dict = load_sheet_rows(active_ws)
-            k += 1
-        else:
-            model_eval_dict = {}
-        model_data_dict = {key: None for key in names[k:]}
-
-        data_keys = list(model_data_dict.keys())
-        for i in range(0, len(data_keys)):
-            if names[i].title != "params" and name[i].title != "eval":
-                active_ws = wb[names[i]]
-                df = pd.DataFrame(active_ws.values)
-                data = df.to_numpy()
-                model_data_dict[data_keys[i]] = data
-
-        return model_param_dict, model_eval_dict, model_data_dict
     
     def load_model(self, path):
 
@@ -335,113 +342,16 @@ class DataLoader(object):
                     yield entry.name
 
         def find_files(path):
-            with os.scandir(path) as it:
-                for entry in it:
-                    if not entry.name.startswith('.') and entry.is_file():
-                        yield(entry.name)
-
-        def get_str_from_name(filename, param_name):
-            i = filename.find(param_name)
-            j = len(param_name)
-            temp = filename[i+j+1:]
-            i = filename.find('_')
-            param_value = temp[0:i]
-            return param_value
-
-        def remove_extra_files(filenames, param_dict):
-            for idx, key in list(enumerate(param_dict.keys())):
-                if param_dict[key] != 'all':
-                    x = param_dict[key]
-                    for name in filenames:
-                        param = get_str_from_name(name, key)
-                        if param != str(x):
-                            filenames = filenames.remove(name)
-            return filenames
-
-        def get_entries(path_prefix, filenames, entry):
-
-            alph_arr, nK_arr, nL_arr, data_arr, param_arr = [], [], [], [], []
-            for name in filenames:
-                alph = get_str_from_name(name, 'alph')
-                alph_arr.append(float(alph))
-                nK = get_str_from_name(name, 'nK')
-                nK_arr.append(int(nK))
-                nL = get_str_from_name(name, 'nL')
-                nL_arr.append(int(nL))
-                param_arr.append(int(nK), int(nL), float(alph))
-
-                path_to_model = path_prefix + "nK=" + nK + "/nL=" + nL + "/" + name
-
-                wb = pxl.load_workbook(path_to_model)
-
-                sheetnames = wb.sheetnames
-                data = None
-
-                for sheetname in sheetnames:
-                    active_ws = wb[sheetname]
-                    dic = load_sheet_rows(active_ws)
-                    try:
-                        data = dic[entry]
-                    except:
-                        None
-                data_arr.append(data)
-
-            alph_set = set(np.sort(np.array(alph_arr)))
-            nK_set = set(np.sort(np.array(nK_arr)))
-            nL_set = set(np.sort(np.array(nL_arr)))
-
-            return alph_set,  nK_set, nL_set, data_arr, param_arr
-
-        param_dict = {"nK": nK, "nL": nL, "alph": alph}
-        n_param = 0
-        all_entries, particulars = [], []
-        for idx, key in list(enumerate(param_dict.keys())):
-            if param_dict[key] == "all":
-                n_param += 1
-                all_entries.append(key)
-            else:
-                particulars.append(key)
-
-        path_prefix = "/blue/pdixit/lukasherron/parallel_dim_reduction/" + data_type + "/"
-        navigation_dict = {key: None for key in param_dict.keys()}
-        navigation_dict["nK"] = list(subdirs(path_prefix))
-        navigation_dict["nL"] = list(subdirs(path_prefix + navigation_dict["nK"][0]))
-        all_filenames = list(find_files(path_prefix))
-        filenames = remove_extra_files(all_filenames, param_dict)
-
-        alph_set, nK_set, nL_set, data_arr, param_arr = get_entries(path_prefix, filenames, entry)
-        alph_ref = list(alph_set)
-        nK_ref = list(nK_set)
-        nL_ref = list(nL_set)
-        output_arr = [[[[] for _ in range(len(alph_ref))] for _ in range(len(nL_ref))] for _ in range(len(nK_ref))]
-
-        for idx, params in list(enumerate(param_arr)):
-            idx_nK = np.argwhere(nK_ref == params[0])
-            idx_nL = np.argwhere(nL_ref == params[1])
-            idx_alph = np.argwhere(alph_ref == params[2])
-
-            output_arr[idx_nK][idx_nL][idx_alph] = data_arr[idx]
-
-        return output_ar
-
-    def load_from_params(self, nK, nL, alph, entry, data_type):
-
-        def subdirs(path):
-            for entry in os.scandir(path):
-                if not entry.name.startswith('.') and entry.is_dir():
-                    yield entry.name
-
-        def find_files(path):
-            result = [y for x in os.walk(path) for y in glob.glob(os.path.join(x[0], '*.xlsx'))]
+            result = [y for x in os.walk(path) for y in glob.glob(os.path.join(x[0], '*.xlsx'))]     
             return result
-
+        
         def pop_path(filename):
             i = 0
             while i != -1:
                 i = filename.find("/")
                 filename = filename[i+1:]
             return filename
-
+        
         def get_str_from_name(filename, param_name):
             filename = pop_path(filename)
             i = filename.find(param_name)
@@ -485,7 +395,7 @@ class DataLoader(object):
                         if key == entry:
                             [[data]] = dic[key]
                 data_arr.append(data)
-
+                
                 i += 1
                 if i % 10 == 0:
                     print("i = ", i)
@@ -495,7 +405,7 @@ class DataLoader(object):
             nL_set = set(nL_arr)
 
             return alph_set,  nK_set, nL_set, data_arr, param_arr
-
+            
 
         param_dict = {"nK": nK, "nL": nL, "alph": alph}
         n_param = 0
@@ -529,7 +439,7 @@ class DataLoader(object):
             ([idx_alph],) = np.where(alph_ref == params[2])
 
             output_arr[idx_nK][idx_nL][idx_alph] = data_arr[idx]
-
+            
         output_arr = np.squeeze(np.array(output_arr))
         output_name = entry + "_nK=" + nK + "_nL=" + nL + "_alph=" + alph + "_.npy"
         print(output_name)
@@ -750,6 +660,36 @@ class Predict_From_Model(object):
         pred_dict["xs_test"] = test_xs
         pred_dict["KL"] = KL
 
+        self.pred_dict = pred_dict
+        
+    def predict_metadata(self, model_param_dict, model_data_dict, validate=False):
+        
+        pred_dict = self.pred_dict
+        self.model_param_dict = model_param_dict
+        self.model_data_dict = model_data_dict
+
+        if validate is False:
+            test_xs = model_data_dict["xs_test"]
+            metz_test = model_data_dict["metz_test"]
+        if validate is True:
+            test_xs = model_data_dict["xs_val"]
+            metz_test = model_data_dict["metz_val"]
+            
+        C = model_data_dict["C"]
+        Z_train = model_data_dict["Z"]
+        thet = model_data_dict["thet"]
+        Q = model_data_dict["Q"]
+        nPC = model_param_dict["nPC"]
+        
+        Z_pred = -np.log(Q) @ np.linalg.pinv(thet)
+        Z_restricted = Z_pred[0:nPC, :]
+        metz_pred = Z_restricted @ C
+        
+        KL = KL_divergence(metz_test, metz_pred)
+        
+        pred_dict["metz"] = metz_pred
+        pred_dict["KL"] = KL
+        
         self.pred_dict = pred_dict
 
     def finalize(self):
