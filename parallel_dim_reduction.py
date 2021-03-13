@@ -620,10 +620,6 @@ class Predict_From_Model(object):
         nTest = len(idx_test)
         Zfr = np.zeros((nTest, nL))
         for i in range(nTest):
-#             print(Z_train.shape)
-#             print(nTest)
-#             print("mu2: ", mu2.shape)
-#             print("cov22: ", cov22.shape)
             z2_train = Z_pred[i, :nPC]
             z2_train = z2_train[:, np.newaxis]
 
