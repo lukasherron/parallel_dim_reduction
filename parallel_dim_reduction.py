@@ -191,7 +191,7 @@ class Parallel_Dimensionality_Reduction(object):
                 self.eval_training_performance()
                 if validate:
                     PFM = Predict_From_Model()
-                    PFM.predict_microbiome(self.param_dict, self.data_dict, validate=True)
+                    PFM.predict_microbiome(self.param_dict, self.data_dict, validate=validate)
                     self.eval_dict["KL_val"].append(PFM.pred_dict["KL"])
                     KL_1 = np.array(self.eval_dict["KL_val"])
                     KL_2 = np.array(self.eval_dict["KL_train"])
@@ -287,8 +287,12 @@ class DataLoader(object):
 
     def split_data(self, test_size, val_size):
         indices = list(range(self.nSamp))
-        train_indices, test_and_val_indices = train_test_split(indices, test_size=test_size + val_size)
-        test_indices, val_indices = train_test_split(test_and_val_indices, test_size=val_size/(test_size + val_size))
+        if val_size == 0:
+            train_indices, test_indices = train_test_split(indices, test_size=test_size)
+            val_indices = [[]]
+        else:
+            train_indices, test_and_val_indices = train_test_split(indices, test_size=test_size + val_size)
+            test_indices, val_indices = train_test_split(test_and_val_indices, test_size=val_size/(test_size + val_size))
 
         return train_indices, test_indices, val_indices
 
@@ -616,7 +620,11 @@ class Predict_From_Model(object):
         nTest = len(idx_test)
         Zfr = np.zeros((nTest, nL))
         for i in range(nTest):
-            z2_train = Z_train[i, :nPC]
+#             print(Z_train.shape)
+#             print(nTest)
+#             print("mu2: ", mu2.shape)
+#             print("cov22: ", cov22.shape)
+            z2_train = Z_pred[i, :nPC]
             z2_train = z2_train[:, np.newaxis]
 
             mubar = mu1 + cov12 @ np.linalg.inv(cov22) @ (mu2 - z2_train)
@@ -635,12 +643,12 @@ class Predict_From_Model(object):
         if validate is False:
             test_xs = model_data_dict["xs_test"]
             metz_test = model_data_dict["metz_test"]
-            idx_test =self.data_dict["idx_test"]
+            idx_test =model_data_dict["idx_test"]
 
         if validate is True:
             test_xs = model_data_dict["xs_val"]
             metz_test = model_data_dict["metz_val"]
-            idx_test =self.data_dict["idx_test"]
+            idx_test = model_data_dict["idx_val"]
 
         C = model_data_dict["C"]
         Z_train = model_data_dict["Z"]
