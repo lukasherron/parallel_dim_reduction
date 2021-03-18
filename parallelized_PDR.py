@@ -19,7 +19,10 @@ def PDR_algo(path_to_data, model_type, further_spec, nK, nL, alph, samp_freq, st
         # LOADING DATA
         loader = DataLoader()
         xs, metx, labels = loader.load_data(path_to_data)
-        idx_train, idx_test, idx_val = loader.split_data(test_size=0.15, val_size=0.15)
+        train_size = 0.75
+        test_size = 1 - train_size
+        val_size=0
+        idx_train, idx_test, idx_val = loader.split_data(test_size=test_size, val_size=val_size)
         metz_train, metz_test, metz_val = loader.preprocess_metadata(metx, idx_train, idx_test, idx_val)
 
         # INITIALIZING DICTS AND OBJECTS
@@ -51,7 +54,7 @@ def PDR_algo(path_to_data, model_type, further_spec, nK, nL, alph, samp_freq, st
 
         # Parallel Dimensionality Reduction
         PDR = Parallel_Dimensionality_Reduction(param_dict, data_dict, eval_dict, grad_dict)
-        PDR.gradient_descent(path_to_model, samp_freq, stop_search, max_iter, validate=True)
+        PDR.gradient_descent(path_to_model, samp_freq, stop_search, max_iter, validate=False)
         print("gradient descent complete")
         PDR.eval_training_performance()
         data_dict, eval_dict, grad_dict = PDR.finalize()  # Model is saved
@@ -99,7 +102,6 @@ def PDR_algo(path_to_data, model_type, further_spec, nK, nL, alph, samp_freq, st
 #         figname = "prediction_scatterplot_nK=" + str(nK) + "_nL=" + str(nL) + "_alph=" + str(alph) + ".jpg"
 #         plt.savefig(pointer_to_fig + figname)
 #         plt.close()
-
         # Saving predictions
         writer.create_pred_workbook(path_to_pred, pred_dict)
         writer.write_pred_workbook(path_to_pred, pred_dict)
@@ -114,10 +116,10 @@ alph_max = 0.3
 alph_div = 0.01
 alph_arr = np.arange(0, int(alph_max/alph_div) + 1) * alph_div
 path_to_data = "/blue/pdixit/lukasherron/parallel_dim_reduction/data/datasets/bovine_data.mat"
-model_type = "distribution_runs"
+model_type='distribution_runs'
 further_spec=None
 
-num_L_components = 4
+num_L_components = 2
 num_K_components = 28
 
 PDR_alph_range(path_to_data, model_type, further_spec, num_K_components, num_L_components, alph_arr, 100, 1000, 20000)
