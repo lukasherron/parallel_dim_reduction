@@ -10,63 +10,24 @@ from sklearn.model_selection import train_test_split
 from scipy.ndimage import gaussian_filter1d
 import os
 import glob
+from tables import *
+import sys
 
 
 def KL_divergence(arr_1, arr_2):
-    # arr_1 is data, arr_2 is theory
+    """ Calculates the KL Divergence between arr_1 and arr_2. Here arr_1 is the 
+    test data and arr_2 is the corresponding predicted data. """
+
     temp = np.ma.log(np.divide(arr_1, arr_2, where=arr_2 != 0).astype('float64'))
     temp = temp.filled(0)
     temp[np.isnan(temp)] = 0
     KL = np.nansum(np.nansum(np.multiply(arr_1, temp)))
+
     return KL
 
-#excel definitions
-def excel_cell(row, col):
-    """ Convert given row and column number to an Excel-style cell name. """
-    LETTERS = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ'
-    result = []
-    while col > 0:
-        col, rem = divmod(col - 1, 26)
-        result[:0] = LETTERS[rem]
-    return ''.join(result) + str(row)
-
-def load_sheet_rows(sheet):
-    # constructing dictionary from sheet
-    keys = []
-    if sheet.title == "params" or sheet.title == "eval":
-        m = 1
-        while m:
-            key = sheet["A" + str(m)].value
-            if key is None:
-                break
-            else:
-                keys.append(key)
-                m += 1
-        new_dict = {key: None for key in keys}
-    else:
-        keys.append(sheet.title)
-
-    # getting data corresponding to keys in new_dict
-    if sheet.title == "params" or sheet.title == "eval":
-        for idx, key in list(enumerate(new_dict.keys())):
-            temp, k = [], 1
-            while k:
-                entry = sheet[excel_cell(idx+1, k+1)].value
-                if entry is None:
-                    break
-                else:
-                    temp.append(entry)
-                    k += 1
-            new_dict[key] = temp
-            if len(temp) == 1:
-                [temp] = temp
-                new_dict[key] = temp
-    else:
-        new_dict = {key: pd.DataFrame(sheet.values).to_numpy() for key in keys}
-
-    return new_dict
-
 def create_filetree(path_to_data_dir, path_to_dataset, model_type, further_spec=None):
+    """ creates filetree that will hold h5 filesystems starting from /dataset_name. 
+    In the future this function will be written in a more concise way."""
 
     parent_dir = lambda: os.chdir(os.path.dirname(os.getcwd()))
 
@@ -85,102 +46,86 @@ def create_filetree(path_to_data_dir, path_to_dataset, model_type, further_spec=
     conditional(model_type)
     if further_spec is not None:
         conditional(further_spec)
-    arr = ["models", "predictions", "plots_and_figs"]
-    for path in arr:
-        conditional(path)
-        for k in range(6, 29):
-            conditional("nK=" + str(k))
-            for l in range(0, 11):
-                conditional("nL=" + str(l))
-                parent_dir()
+    for k in range(6, 29):
+        conditional("nK=" + str(k))
+        for l in range(0, 11):
+            conditional("nL=" + str(l))
             parent_dir()
         parent_dir()
     os.chdir(cd)
     
     return name
 
+class ObjFromDict(object):
+    """ Maps key/value pairs of a dict to attributes of an object, with identifier 
+    string obj_ref"""
+    def __init__(self, obj_dict, obj_ref):
+        for key in list(obj_dict.keys()):
+            setattr(self, key, obj_dict[key])
+        setattr(self, "obj_keys", list(obj_dict.keys()))
+        setattr(self, "obj_type", obj_ref)
+
 class Parallel_Dimensionality_Reduction(object):
 
-    def __init__(self, param_dict, data_dict, eval_dict, grad_dict):
-
-        self.param_dict = param_dict
-        self.data_dict = data_dict
-        self.eval_dict = eval_dict
-        self.grad_dict = grad_dict
+    def __init__(self, ParamObj, DataObj, EvalObj, GradObj, PredObj=None):
+        self.DataObj = DataObj
+        self.ParamObj = ParamObj
+        self.EvalObj = EvalObj
+        self.GradObj = GradObj
+        self.PredObj = PredObj
 
     def eval_Q(self):
+        """ Evaluates TMI Predictions from Z and thet. Includes making predictions
+        and normalization. """
 
-        Z = self.data_dict["Z"]
-        thet = self.data_dict["thet"]
+        self.DataObj.Q = np.exp(-self.DataObj.Z @ self.DataObj.thet)
+        self.DataObj.Q[np.isnan(self.DataObj.Q)] = 0
+        norms = self.DataObj.Q.sum(1)
+        self.DataObj.Q = np.divide(self.DataObj.Q.T, norms, where=norms != 0).T
 
-        Q = np.exp(-Z @ thet)
-        Q[np.isnan(Q)] = 0
-        norms = Q.sum(1)
-        Q = np.divide(Q.T, norms, where=norms != 0).T
+    def PCA_TMI_gradient_update(self):
+        """ Updates the gradients of the relevant variables assuming that PCA reduction
+        is performed"""
 
-        self.data_dict["Q"] = Q
-
-    def gradient_update(self):
-
-        Q = self.data_dict["Q"]
-        Z = self.data_dict["Z"]
-        thet = self.data_dict["thet"]
-        C = self.data_dict["C"]
-        xs = self.data_dict["xs_train"]
-        metz = self.data_dict["metz_train"]
-
-        alph = self.param_dict["alph"]
-        nPC = self.param_dict["nPC"]
-        etaZ = self.param_dict["etaZ"]
-        etaT = self.param_dict["etaT"]
-        etaC = self.param_dict["etaC"]
-
-        delt = xs - Q
-        Zcon = Z[:, 0:nPC]
-        grthet = (1 - alph) * Z.T @ delt
-        grz = (1 - alph) * delt @ thet.T
+        delt = self.DataObj.xs_train - self.DataObj.Q
+        self.DataObj.Zcon = self.DataObj.Z[:, 0:self.ParamObj.nPC]
+        self.GradObj.thet = (1 - self.ParamObj.alph) * self.DataObj.Z.T @ delt
+        self.GradObj.grz = (1 - self.ParamObj.alph) * delt @ self.DataObj.thet.T
         # gradient for free components
 
-        grz_con = -2 * alph * (metz - Zcon @ C) @ C.T
-        grz[:, 0:nPC] += grz_con
-        grc = -2 * alph * Zcon.T @ (metz - Zcon @ C)
-        Z -= etaZ * grz
-        thet -= etaT * grthet
-        C -= etaC * grc
-
-        self.data_dict["Z"] = Z
-        self.data_dict["thet"] = thet
-
-        self.grad_dict["grz"] = grz
-        self.grad_dict["grthet"] = grthet
-        self.grad_dict["grc"] = grc
+        grz_con = -2 * self.ParamObj.alph * (self.DataObj.metz_train - self.DataObj.Zcon @ \
+                                             self.DataObj.C) @ self.DataObj.C.T
+        self.GradObj.grz[:, 0:self.ParamObj.nPC] += grz_con
+        self.GradObj.grc = -2 * self.ParamObj.alph * self.DataObj.Zcon.T @ \
+        (self.DataObj.metz_train - self.DataObj.Zcon @ self.DataObj.C)
+        self.DataObj.Z -= self.ParamObj.etaZ * self.GradObj.grz
+        self.DataObj.thet -= self.ParamObj.etaT * self.GradObj.thet
+        self.DataObj.C -= self.ParamObj.etaC * self.GradObj.grc
 
     def eval_training_performance(self):
+        """ Evaluates the KL divergence and relative errors between the training model. """
+        
+        self.EvalObj.e1 = np.linalg.norm(self.DataObj.metz_train - self.DataObj.Zcon @ \
+                                         self.DataObj.C)
+        self.EvalObj.e1 = self.ParamObj.alph * self.EvalObj.e1 ** 2
 
-        metz = self.data_dict["metz_train"]
-        Zcon = self.data_dict["Zcon"]
-        C = self.data_dict["C"]
-        xs_train = self.data_dict["xs_train"]
-        Q = self.data_dict["Q"]
-        alph = self.param_dict["alph"]
-        idx_train =self.data_dict["idx_train"]
-
-        e1 = np.linalg.norm(metz - Zcon @ C)
-        e1 = alph * e1 ** 2
-
-        KL_train = KL_divergence(xs_train, Q)/len(idx_train)
-        e2 = (1 - alph) * KL_train
-
-        self.eval_dict["e1"] = e1
-        self.eval_dict["e2"] = e2
-        self.eval_dict["KL_train"].append(KL_train)
+        self.EvalObj.KL_train = KL_divergence(self.DataObj.xs_train, \
+                                              self.DataObj.Q)/len(self.DataObj.idx_train)
+        self.EvalObj.e2 = (1 - self.ParamObj.alph) * self.EvalObj.KL_train
 
     def step(self):
+        """ One iteration of the gradient descent algorithm."""
 
         self.eval_Q()
-        self.gradient_update()
+        self.PCA_TMI_gradient_update()
 
     def gradient_descent(self, path, samp_freq, stop_search, maxiter, validate=True, verbose=True):
+        """ Complete gradient descent algorithm with the option to validate the training data on 
+        some validation set calculated with the validation data from the split_data(...) function 
+        under the DataLoader class.
+        
+        In the future a general early stopping mechanism will be added."""
+        
         i = 0
         check_stop = False
 
@@ -190,79 +135,163 @@ class Parallel_Dimensionality_Reduction(object):
             if i % samp_freq == 0:
                 self.eval_training_performance()
                 if validate:
-                    PFM = Predict_From_Model()
-                    PFM.predict_microbiome(self.param_dict, self.data_dict, validate=validate)
-                    self.eval_dict["KL_val"].append(PFM.pred_dict["KL"])
-                    KL_1 = np.array(self.eval_dict["KL_val"])
-                    KL_2 = np.array(self.eval_dict["KL_train"])
-#                     KL_tot = (KL_1 + KL_2)[int((stop_search - samp_freq) / samp_freq):]
+                    PFM = Predict_From_Model(PredObj, DataObj, ParamObj)
+                    PFM.predict_microbiome(validate=validate)
+                    self.EvalObj.KL_val.append(PFM.PredObj.KL)
+                    KL_1 = np.array(self.EvalObj.KL_val)
+                    KL_2 = np.array(self.EvalObj.KL_train)
                     KL_tot = (KL_1)[int((stop_search - samp_freq) / samp_freq):]
-                # writer = DataWriter()
-                # writer.write_model_workbook(path, self.param_dict, self.eval_dict, self.data_dict)
-
-                # Detecting drop in KL divergence that corresponds to optimal generality (after 55,000 iterations)
-#                 if i > stop_search + 2*samp_freq:
-#                     KL_p = gaussian_filter1d(KL_tot[1:-1], 5) - gaussian_filter1d(KL_tot[0:-2], 5)  # smoothing noise
-#                     print("KL_prime =",'%.3f' % KL_p[-1])
-#                     print("KL = ", KL_tot[-1])
-# #                     if KL_p[-1] < -3.5:
-#                     if KL_p[-1] < -40:
-#                         check_stop = True
-#                     if check_stop is True and KL_p[-1] >= 0:
-#                         break
-                    if i > 20000:
-                        break
 
         self.eval_training_performance()
         if validate:
-            PFM = Predict_From_Model()
-            PFM.predict_microbiome(self.param_dict, self.data_dict, validate=True)
-            self.eval_dict["KL_val"].append(PFM.pred_dict["KL"])
-        writer = DataWriter()
-        writer.write_model_workbook(path, self.param_dict, self.eval_dict, self.data_dict)
+            PFM = Predict_From_Model(PredObj, DataObj, ParamObj)
+            PFM.predict_microbiome(validate=validate)
+            self.EvalObj.KL_val.append(PFM.PredObj.KL)
 
     def finalize(self):
-        return self.data_dict, self.eval_dict, self.grad_dict
+        """ Returns objects. Always call finalize to make the changes made to objects from the 
+        PDR_reduction class persistent."""
+        
+        return self.DataObj, self.EvalObj, self.GradObj
 
 
 class PCA_reduction(object):
 
-    def __init__(self, param_dict, data_dict, eval_dict):
-        self.param_dict = param_dict
-        self.data_dict = data_dict
-        self.eval_dict = eval_dict
+    def __init__(self, ParamObj, DataObj, EvalObj):
+        self.DataObj = DataObj
+        self.ParamObj = ParamObj
+        self.EvalObj = EvalObj
 
-    def dim_reduction(self, guess):
-        xs = self.data_dict["xs_train"]
-        nPC = self.param_dict["nPC"]
-        nL = self.param_dict["nL"]
-        nMet = self.param_dict["nMet"]
-        metz = self.data_dict["metz_train"]
+    def dim_reduction(self, guess=True):
+        """ Performs PCA reduction on the metadata passed to DataObj."""
 
-        [nSamp, _] = xs.shape
-        pca = PCA(n_components=nPC)
-        Zcon = pca.fit_transform(metz)
-        [C, _] = [pca.components_, pca.explained_variance_]
-        C = C.T
-        C = C[:nPC, :]
+        [nSamp, _] = self.DataObj.xs_train.shape
+        pca = PCA(n_components=self.ParamObj.nPC)
+        self.DataObj.Zcon = pca.fit_transform(self.DataObj.metz_train)
+        [self.DataObj.C, _] = [pca.components_, pca.explained_variance_]
+        self.DataObj.C = self.DataObj.C.T
+        self.DataObj.C = self.DataObj.C[:self.ParamObj.nPC, :]
 
         if guess:
-            C = np.random.normal(size=(nPC, nMet))
-            Zfr = np.random.random(size=(nSamp, nL))
-            Z = np.hstack((Zcon, Zfr))
-
-        self.data_dict["Z"] = Z
-        self.data_dict["C"] = C
-        self.data_dict["Zcon"] = Zcon
-        self.eval_dict["ll_pca"] = pca.score(metz)
+            self.DataObj.C = np.random.normal(size=(self.ParamObj.nPC, self.ParamObj.nMet))
+            Zfr = np.random.random(size=(nSamp, self.ParamObj.nL))
+            self.DataObj.Z = np.hstack((self.DataObj.Zcon, Zfr))
 
     def finalize(self):
-        return self.data_dict, self.eval_dict
+        """ Returns objects. Always call finalize to make the changes made to objects from the 
+        PCA_reduction class persistent."""
+        
+        return self.DataObj, self.EvalObj
+    
+class DataWriter(object):
 
+    def __init__(self, path_to_h5, mode):
+        self.h5file = open_file(path_to_h5, mode=mode)
+    
+    @staticmethod
+    def get_dtype(data):
+        """Given a dict, generate a nested numpy dtype"""
+        
+        if sys.version.startswith('3'):
+            unicode = str
+        fields = []
+        for (key, value) in data.items():
+            # make strings go to the next 64 character boundary
+            # pytables requires an 8 character boundary
+            if isinstance(value, unicode):
+                value += u' ' * (64 - (len(value) % 64))
+                # pytables does not support unicode
+                if isinstance(value, unicode):
+                    value = value.encode('utf-8')
+            elif isinstance(value, str):
+                value += ' ' * (64 - (len(value) % 64))
+
+            if isinstance(value, dict):
+                fields.append((key, get_dtype(value)))
+            else:
+                value = np.array(value)
+                fields.append((key, '%s%s' % (value.shape, value.dtype)))
+        return np.dtype(fields)
+
+    @staticmethod
+    def unpack(row, base, data):
+        """ Unpacks th entries of a dict. """
+        
+        for (key, value) in data.items():
+            new = base + key
+            if isinstance(value, dict):
+                unpack(row, new + '/', value)
+            else:
+                row[new] = value
+
+    @staticmethod
+    def add_row(tbl, data):
+        """Add a new row to a table based on the contents of a dict."""
+        
+        row = tbl.row
+        for (key, value) in data.items():
+            if isinstance(value, dict):
+                unpack(row, key + '/', value)
+            else:
+                row[key] = value
+        row.append()
+        tbl.flush()
+
+    def navigate_to_table(self, ArbObj, alph, model_type):
+        """ Navigates to a table based on a specified path and the reference string of a dict. If the 
+        groups along the path to the table do not exists or the table does not exist it is created.
+        
+        In the future this function will be changed so that the path is specified by **kwargs."""
+        
+        path_construct = "/alph=" + str(alph)
+        path_deconstruct = ["alph=" + str(alph)]
+        h5file = self.h5file
+        group_exists, table_exists = False, False
+        for group in h5file.walk_groups():
+            if path_construct == group._v_pathname:
+                group_exists = True
+                break
+
+        if group_exists is False:
+            for group_name in path_deconstruct:
+                group_path = "/"
+                try:
+                    group = h5file.create_group(group_path, group_name)
+                except:
+                    pass
+                group_path = os.path.join(group_path, group_name)
+
+        for table in h5file.list_nodes(group):
+            if ArbObj.obj_type == table._v_name:
+                table_exists = True
+                break
+
+        if table_exists is False:
+            dtype = self.get_dtype(ArbObj.__dict__)
+            table = h5file.create_table(group, ArbObj.obj_type, dtype)
+
+        return table
+        
+    def write_obj(self, ParamObj, ArbObj):
+        """ Writes an object to a table specified by the obj_type reference attribute of the object."""
+        
+        alph = ParamObj.alph
+        runID = ParamObj.runID
+        model_type = ArbObj.obj_type
+        table = self.navigate_to_table(ArbObj, alph, model_type)
+        dtype = self.get_dtype(ArbObj.__dict__)
+        self.add_row(table, ArbObj.__dict__)
+        
+    def close(self):
+        """ Saves and closes the file which the DataWriter object modifies."""
+        
+        self.h5file.flush()
+        self.h5file.close()
+        
 
 class DataLoader(object):
 
-    def __init__(self):
+    def __init__(self, path=None, mode="r"):
         self.mat = None
         self.labels = None
         self.nMet = None
@@ -270,8 +299,17 @@ class DataLoader(object):
         self.nSamp = None
         self.mu_met = None
         self.sg_met = None
+        if path is not None and mode is not None:
+            self.h5file = open_file(path, mode=mode)
+            self.path = path            
 
     def load_data(self, path):
+        """Loads the dataset located at the specified path. Currently the dataset must be in .mat 
+        format.
+        
+        In the future the function will be able to load excel files or accept pandas datasets and numpy 
+        arrays/labels."""
+        
         mat = loadmat(path)
         self.mat_keys = mat.keys()
         self.mat = mat
@@ -286,18 +324,26 @@ class DataLoader(object):
         return xs, metx, labels
 
     def split_data(self, test_size, val_size):
+        """ Splits data into testing, training, and validation sets. test_size and val_size are the 
+        proporitons of the original dataset that will be included in the test and validation set.
+        
+        This function is deprecated and the handling of empty validation sets will be handled more 
+        elegantly in the future."""
         indices = list(range(self.nSamp))
         if val_size == 0:
             train_indices, test_indices = train_test_split(indices, test_size=test_size)
             val_indices = [[]]
         else:
-            train_indices, test_and_val_indices = train_test_split(indices, test_size=test_size + val_size)
-            test_indices, val_indices = train_test_split(test_and_val_indices, test_size=val_size/(test_size + val_size))
+            train_indices, test_and_val_indices = train_test_split(indices, test_size=test_size \
+                                                                   + val_size)
+            test_indices, val_indices = train_test_split(test_and_val_indices, \
+                                                         test_size=val_size/(test_size + val_size))
 
         return train_indices, test_indices, val_indices
 
 
     def preprocess_metadata(self, metx, train_idx, test_idx, val_idx):
+        """ Standardizes metadata. Demeaning and dividing by standard deviation."""
 
         metx_train = metx[train_idx]
         metx_test = metx[test_idx]
@@ -313,33 +359,50 @@ class DataLoader(object):
 
         return metz_train, metz_test, metz_val
     
-    def load_model(self, path):
-
-        wb = pxl.load_workbook(path, read_only=True)
-        names = wb.sheetnames[1:]
-        k = 0
-        if names[0] == "params":
-            active_ws = wb[names[0]]
-            model_param_dict = load_sheet_rows(active_ws)
-            k += 1
-        else:
-            model_param_dict = {}
-
-        if names[1] == "eval":
-            active_ws = wb[names[1]]
-            model_eval_dict = load_sheet_rows(active_ws)
-            k += 1
-        else:
-             model_eval_dict = {}
-        model_data_dict = {}
-        for name in names[k:]:
-            active_ws = wb[name]
-            data = load_sheet_rows(active_ws)
-            model_data_dict[list(data.keys())[0]] = data[list(data.keys())[0]]
-
-        return model_param_dict, model_eval_dict, model_data_dict
+    def load_obj(self, nK, nL, alph, obj_type, runIDs=all, entries=all):
+        """ Loads an object from an h5file. nK, nL, and alph specify the parameters of the model. 
+        The table in the h5file is specified by obj_type which can be "param", "data", "eval", or 
+        "pred". RunIDs handles the case of multiple model runs while entries enables a single entry 
+        of the table to be returned. The retured data takes the form of a dict, where the keys are 
+        the column names of the entries in the table and the values are the corresponding entries.  
+        
+        In the future this definition will be able to handle a consolidated dataset. Currently 
+        params nK and nL specify directories, but the ability to contain nK, nL, alph in a single 
+        h5file will be added.
+        """
+        
+        if self.path.find("consolidated") == -1:
+            path_construct = os.path.join("/", "alph=" + str(alph), obj_type)
+            data_table = self.h5file.get_node(path_construct)
+            data = {}
+            labels = data_table.colnames
+            if runIDs is not all:
+                i = 0
+                for runID in runIDs:
+                    i += 1
+                    if entries is not all:
+                        for entry in entries:
+                            label_idx = labels.index(entry)
+                            if i == 1:
+                                data[labels[label_idx]] = []
+                            data[labels[label_idx]].append(data_table[runID][label_idx])
+                    else:
+                        values = [x for x in data_table[runID]]
+                        for idx, label in enumerate(labels):
+                            data[label] = values[idx]
+            else:
+                if entries is not all:
+                    for entry in entries:
+                        label_idx = labels.index(entry)
+                        data[labels[label_idx]] = [x[label_idx] for x in data_table.iterrows()]
+                else:
+                    for idx, label in enumerate(labels):
+                        data[label] = [x[idx] for x in data_table.iterrows()]
+        return data
+        
 
     def load_from_params(self, nK, nL, alph, entry, data_type):
+        """ This function is deprecated and must be changed to be compatible with h5files. """
 
         def subdirs(path):
             for entry in os.scandir(path):
@@ -452,169 +515,68 @@ class DataLoader(object):
 
         return output_arr, nK_ref, nL_ref, alph_ref
 
-
-class DataWriter(object):
-
-    def __init__(self):
-        self.none = None
-
-    @staticmethod
-    def create_model_workbook(path, data_dict):
-
-        data_keys = data_dict.keys()
-        wb = Workbook()
-        wb.create_sheet(title="params")
-        wb.create_sheet(title="eval")
-        for key in data_keys:
-            wb.create_sheet(title=key)
-        wb.save(path)
-
-    @staticmethod
-    def write_model_workbook(path, param_dict, eval_dict, data_dict):
-
-        def write_to_excel(data, ws):
-            if isinstance(data, list) or type(data).__name__ == 'ndarray':
-                df = pd.DataFrame(data)
-                for r in dataframe_to_rows(df, index=False, header=False):
-                    ws.append(r)
-            else:
-                ws.append([data])
-
-        print("writing ...")
-
-        wb = pxl.load_workbook(path)
-
-        param_keys = param_dict.keys()
-        eval_keys = eval_dict.keys()
-        data_keys = data_dict.keys()
-
-        active_ws = wb["params"]
-        idx = wb.sheetnames.index("params")
-        wb.remove(active_ws)
-        wb.create_sheet("params", idx)
-        active_ws = wb["params"]
-
-        for key in param_keys:
-            data = param_dict[key]
-            write_to_excel([data], active_ws)
-        active_ws.insert_cols(0)
-        i = 1
-        for key in param_keys:
-            active_ws['A' + str(i)] = key
-            i += 1
-
-        active_ws = wb["eval"]
-        idx = wb.sheetnames.index("eval")
-        wb.remove(active_ws)
-        wb.create_sheet("eval", idx)
-        active_ws = wb["eval"]
-
-        for key in eval_keys:
-            data = eval_dict[key]
-            write_to_excel([data], active_ws)
-        active_ws.insert_cols(0)
-        i = 1
-        for key in eval_keys:
-            active_ws['A' + str(i)] = key
-            i += 1
-
-        for key in data_keys:
-            active_ws = wb[key]
-            idx = wb.sheetnames.index(key)
-            wb.remove(active_ws)
-            wb.create_sheet(key, idx)
-            active_ws = wb[key]
-            data = data_dict[key]
-            write_to_excel(data, active_ws)
-
-        wb.save(path)
-
-    @staticmethod
-    def create_pred_workbook(path, pred_dict):
-        pred_keys = pred_dict.keys()
-        wb = Workbook()
-        for key in pred_keys:
-            wb.create_sheet(title=key)
-        wb.save(path)
-
-    @staticmethod
-    def write_pred_workbook(path, pred_dict):
-
-        def write_to_excel(data, ws):
-            if isinstance(data, list) or type(data).__name__ == 'ndarray':
-                df = pd.DataFrame(data)
-                for r in dataframe_to_rows(df, index=False, header=False):
-                    ws.append(r)
-            else:
-                ws.append([data])
-
-        print("writing ...")
-
-        wb = pxl.load_workbook(path)
-
-        pred_keys = pred_dict.keys()
-        for key in pred_keys:
-            active_ws = wb[key]
-            idx = wb.sheetnames.index(key)
-            wb.remove(active_ws)
-            wb.create_sheet(key, idx)
-            active_ws = wb[key]
-            data = pred_dict[key]
-            write_to_excel(data, active_ws)
-
-        wb.save(path)
-
+        def close(self):
+            """ Closes the h5file that the DataLoader reads. """
+            self.h5file.close()
 
 class Predict_From_Model(object):
 
     def __init__(self):
 
         pred_dict = {
-            "Q": None,
-            "Z": None,
-            "Zfr": None,
-            "C": None,
-            "KL": None,
-            "xs_test": None
-
+            "Q": np.nan,
+            "Z": np.nan,
+            "Zfr": np.nan,
+            "C": np.nan,
+            "KL": np.nan,
         }
 
-        self.model_param_dict = None
-        self.model_data_dict = None
-        self.model_eval_dict = None
-        self.pred_dict = pred_dict
+        self.ParamObj = None
+        self.EvalObj = None
+        self.DataObj = None
+        self.PredObj = ObjFromDict(pred_dict, "pred")
 
-    def load_model(self, path_to_model):
+    def load_model(self, path_to_h5file, nK, nL, alph, runID):
+        """Loads a model from a h5file. """
+        loader = DataLoader(path_to_h5file, mode="r")
+        model_param_dict= loader.load_obj(nK, nL, alph, "param", runIDs=runID, entries=all)
+        model_eval_dict = loader.load_obj(nK, nL, alph, "eval", runIDs=runID, entries=all)
+        model_data_dict = loader.load_obj(nK, nL, alph, "data", runIDs=runID, entries=all)
+        self.ParamObj = ObjFromDict(model_param_dict, "param")
+        self.EvalObj = ObjFromDict(model_eval_dict, "eval")
+        self.DataObj = ObjFromDict(model_data_dict, "data")
+        
+        loader.close()
+        
+    def inherit_model(self, ParamObj, DataObj, EvalObj):
+        """ Passes the objects from a model to a PredictFromModel object."""
+        
+        self.ParamObj = ParamObj
+        self.DataObj = DataObj
+        self.EvalObj = EvalObj
+    
+    def estimate_free_components(self, Z_train, Z_pred, validate):
+        """ Estimates the free components that are assumed to be gaussian distributes. The assmuned gaussian
+        is conditionalized over the training data and the free components are sampled from the conditionalized 
+        distribution. """
 
-        loader = DataLoader()
-        self.model_param_dict, self.model_eval_dict, self.model_data_dict = loader.load_model(path_to_model)
-
-    def init_free_components(self, Z_train, Z_pred, validate):
-
-        nPC = self.model_param_dict["nPC"]
-        nL = self.model_param_dict["nL"]
+        nPC = self.ParamObj.nPC
+        nL = self.ParamObj.nL
         if validate is False:
-            idx_test = self.model_data_dict["idx_test"]
+            idx_test = self.DataObj.idx_test
         if validate is True:
-            idx_test = self.model_data_dict["idx_val"]
-
-        '''
-        Zfr are the Z scores of the free components
-        z2 are the Z scores of the components constrained by PCA
-        '''
+            idx_test = self.DataObj.idx_val
 
         muZ = np.mean(Z_train, axis=0).T
         muZ = muZ[:, np.newaxis]
-        z2 = Z_pred[:, :nPC]  # PCA componetns when predicting # THESE ARE NOT FROM TRAINING # unknown for new cow
+        z2 = Z_pred[:, :nPC]  
         mu2 = muZ[:nPC]
         mu1 = muZ[nPC:]
-        covZ = np.cov(Z_train.T)  # Z is from training
+        covZ = np.cov(Z_train.T) 
         cov11 = covZ[nPC:, nPC:]
         cov12 = covZ[nPC:, :nPC]
         cov21 = cov12.T
         cov22 = covZ[:nPC, :nPC]
-
-        # MEANS AND COVARIANCES ARE FROM TRAINING PHASE, z1 IS FROM THE TESTING PHASE
 
         sigbar = cov11 - cov12 @ np.linalg.inv(cov22) @ cov21
         nTest = len(idx_test)
@@ -630,76 +592,62 @@ class Predict_From_Model(object):
 
         return Zfr, Z
 
-    def predict_microbiome(self, model_param_dict, model_data_dict, validate=False):
-
-        pred_dict = self.pred_dict
-        self.model_param_dict = model_param_dict
-        self.model_data_dict = model_data_dict
+    def predict_microbiome(self, validate=False):
+        """ Predicts the microbiome from corresponding metadata samples using the learned C, Z, and thet. """
 
         if validate is False:
-            test_xs = model_data_dict["xs_test"]
-            metz_test = model_data_dict["metz_test"]
-            idx_test =model_data_dict["idx_test"]
+            test_xs = self.DataObj.xs_test
+            metz_test = self.DataObj.metz_test
+            idx_test = self.DataObj.idx_test
 
         if validate is True:
-            test_xs = model_data_dict["xs_val"]
-            metz_test = model_data_dict["metz_val"]
-            idx_test = model_data_dict["idx_val"]
+            test_xs = self.DataObj.xs_val
+            metz_test = self.DataObj.metz_val
+            idx_test = self.DataObj.idx_val
 
-        C = model_data_dict["C"]
-        Z_train = model_data_dict["Z"]
-        thet = model_data_dict["thet"]
+        C = self.DataObj.C
+        Z_train = self.DataObj.Z
+        thet =self.DataObj.thet
 
-        # Performing PCA reduction
-        Z_pred = metz_test @ np.linalg.pinv(C)
-        if model_param_dict["nL"] != 0:
-            self.pred_dict["Zfr"], self.pred_dict["Z"] = self.init_free_components(Z_train, Z_pred, validate)
-            Z = pred_dict["Z"]
+        Z_pred = metz_test @ np.linalg.pinv(self.DataObj.C)
+        if self.ParamObj.nL != 0:
+            self.PredObj.Zfr, self.PredObj.Z = self.estimate_free_components(self.DataObj.Z, Z_pred, validate)
+            Z = self.PredObj.Z
         else:
             Z = Z_pred
 
-        Q = np.exp(-Z @ thet)
-        Q[np.isnan(Q)] = 0
-        norms = Q.sum(1)
-        Q = np.divide(Q.T, norms, where=norms != 0).T
-        pred_dict["Q"] = Q
-
-        KL = KL_divergence(test_xs, Q)/len(idx_test)
-
-        pred_dict["xs_test"] = test_xs
-        pred_dict["KL"] = KL
-
-        self.pred_dict = pred_dict
+        self.PredObj.Q = np.exp(-Z @ self.DataObj.thet)
+        self.PredObj.Q[np.isnan(self.PredObj.Q)] = 0
+        norms = self.PredObj.Q.sum(1)
+        self.PredObj.Q = np.divide(self.PredObj.Q.T, norms, where=norms != 0).T
+        self.PredObj.KL = KL_divergence(test_xs, self.PredObj.Q)/len(idx_test)
         
-    def predict_metadata(self, model_param_dict, model_data_dict, validate=False):
+    def predict_metadata(self, validate=False):
+        """ Predicts the metadata from corresponding microbiome samples using C, Z, and thet."""
         
         pred_dict = self.pred_dict
         self.model_param_dict = model_param_dict
         self.model_data_dict = model_data_dict
 
         if validate is False:
-            test_xs = model_data_dict["xs_test"]
-            metz_test = model_data_dict["metz_test"]
+            test_xs = self.DataObj.xs_test
+            metz_test = self.DataObj.metz_test
+            idx_test = self.DataObj.idx_test
+
         if validate is True:
-            test_xs = model_data_dict["xs_val"]
-            metz_test = model_data_dict["metz_val"]
-            
-        C = model_data_dict["C"]
-        Z_train = model_data_dict["Z"]
-        thet = model_data_dict["thet"]
-        Q = model_data_dict["Q"]
-        nPC = model_param_dict["nPC"]
+            test_xs = self.DataObj.xs_val
+            metz_test = self.DataObj.metz_val
+            idx_test = self.DataObj.idx_val
+
+        nPC = self.ParamObj.nPC
         
-        Z_pred = -np.log(Q) @ np.linalg.pinv(thet)
+        Z_pred = -np.log(self.DataObj.Q) @ np.linalg.pinv(self.DataObj.thet)
         Z_restricted = Z_pred[0:nPC, :]
-        metz_pred = Z_restricted @ C
-        
-        KL = KL_divergence(metz_test, metz_pred)
-        
-        pred_dict["metz"] = metz_pred
-        pred_dict["KL"] = KL
-        
-        self.pred_dict = pred_dict
+        self.PredObj.metz = Z_restricted @ self.DataObj.C        
+        self.PredObj.KL = KL_divergence(metz_test, metz_pred)
 
     def finalize(self):
-        return self.pred_dict
+        """ Returns objects. Always call finalize to make the changes made to objects from the 
+        PredictFromModel class persistent."""
+        return self.PredObj
+        
