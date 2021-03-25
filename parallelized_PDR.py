@@ -3,123 +3,97 @@ from parallel_dim_reduction import *
 import numpy as np
 import matplotlib.pyplot as plt
 from plots_and_figs import *
+from tables import *
+import sys
 
 
-def PDR_algo(path_to_data, model_type, further_spec, nK, nL, alph, samp_freq, stop_search, max_iter):
-
-    for num in range(20):
-
-        path_to_data_dir = "/blue/pdixit/lukasherron/parallel_dim_reduction/data/"
-        dataset_name = create_filetree(path_to_data_dir, path_to_data, model_type, further_spec=further_spec)
-        fs = str(further_spec)
-        if fs == "None":
-            fs = ""
-        path_stem = "/blue/pdixit/lukasherron/parallel_dim_reduction/data/" + str(dataset_name) + "/" + str(model_type) + "/" + fs + "/"
+def PDR_algo(path_to_data_dir, writer, nK, nL, alph, num_runs, samp_freq, stop_search, max_iter):
+    
+    for runID in range(num_runs):
         
         # LOADING DATA
         loader = DataLoader()
         xs, metx, labels = loader.load_data(path_to_data)
         train_size = 0.75
         test_size = 1 - train_size
-        val_size=0
+        val_size = 0
         idx_train, idx_test, idx_val = loader.split_data(test_size=test_size, val_size=val_size)
         metz_train, metz_test, metz_val = loader.preprocess_metadata(metx, idx_train, idx_test, idx_val)
 
         # INITIALIZING DICTS AND OBJECTS
         param_dict = {"nK": nK, "alph": alph, "etaZ": 3e-5, "etaT": 3e-5, "etaC": 1e-5, "nPC": nK - nL, "nL": nL,
                       "nMet": loader.nMet, "nD": xs.shape[1], "nSamp": loader.nSamp, "mu_met": loader.mu_met,
-                      "sg_met": loader.sg_met}
+                      "sg_met": loader.sg_met, "runID": runID}
 
-        eval_dict = dict(e1=None, e2=None, KL_final=None, KL_train=[], KL_val=[])
+        eval_dict = dict(e1=np.nan, e2=np.nan, KL_final=np.nan, KL_train=[0], KL_val=[0])
 
-        grad_dict = dict(grz=None, grthet=None, grc=None)
+        grad_dict = dict(grz=np.nan, grthet=np.nan, grc=np.nan)
 
-        data_dict = {"xs_train": xs[idx_train], "xs_test": xs[idx_test], "xs_val": xs[idx_val], "Q": None,
-                     "metz_train": metz_train, "metz_test": metz_test, "metz_val": metz_val, "C": None, "Z": None,
-                     "Zcon": None, "Zfr": None,
+        data_dict = {"xs_train": xs[idx_train], "xs_test": xs[idx_test], "xs_val": xs[idx_val], "Q": np.nan,
+                     "metz_train": metz_train, "metz_test": metz_test, "metz_val": metz_val, "C": np.nan, "Z": None,
+                     "Zcon": np.nan, "Zfr": np.nan,
                      "thet": np.random.random(size=(param_dict["nPC"] + param_dict["nL"], param_dict["nD"])),
                      "labels": labels, "idx_train": idx_train, "idx_test": idx_test, "idx_val": idx_val}
-
-        pointer_to_model = path_stem + "/models/nK=" + str(nK) + "/nL=" + str(nL) + "/"
-        filename_model = "model_nK=" + str(nK) + "_nL=" + str(nL) + "_alph=" + str(alph) + "_num=" + str(num) + "_.xlsx"
-        path_to_model = pointer_to_model + filename_model
-        writer = DataWriter()
-        writer.create_model_workbook(path_to_model, data_dict)
+        
+        
+        ParamObj = ObjFromDict(param_dict, "param")
+        EvalObj = ObjFromDict(eval_dict, "eval")
+        GradObj = ObjFromDict(grad_dict, "grad")
+        DataObj = ObjFromDict(data_dict, "data")
 
     # TRAINING
         # PCA is a good initial guess for PDR
-        PCA_red = PCA_reduction(param_dict, data_dict, eval_dict)
+        PCA_red = PCA_reduction(ParamObj, DataObj, EvalObj)
         PCA_red.dim_reduction(guess=True)
-        data_dict, eval_dict = PCA_red.finalize()
+        DataObj, EvalObj = PCA_red.finalize()
 
         # Parallel Dimensionality Reduction
-        PDR = Parallel_Dimensionality_Reduction(param_dict, data_dict, eval_dict, grad_dict)
-        PDR.gradient_descent(path_to_model, samp_freq, stop_search, max_iter, validate=False)
-        print("gradient descent complete")
+        PDR = Parallel_Dimensionality_Reduction(ParamObj, DataObj, EvalObj, GradObj)
+        PDR.gradient_descent(writer, samp_freq, stop_search, max_iter, validate=False)
         PDR.eval_training_performance()
-        data_dict, eval_dict, grad_dict = PDR.finalize()  # Model is saved
-
+        DataObj, EvalObj, GradObj = PDR.finalize()
+        
     # TESTING PHASE
-        pointer_to_pred = path_stem + "/predictions/nK=" + str(nK) + "/nL=" + str(nL) + "/"
-        filename_pred = "model_nK=" + str(nK) + "_nL=" + str(nL) + "_alph=" + str(alph) + "_num=" + str(num) + "_pred.xlsx"
-        path_to_pred = pointer_to_pred + filename_pred
-
-        # Loading model
-        model_param_dict, model_eval_dict, model_data_dict = loader.load_model(path_to_model)
-
         # Making predictions
         PFM = Predict_From_Model()
-        PFM.load_model(path_to_model)
-        PFM.predict_microbiome(model_param_dict, model_data_dict)
-        pred_dict = PFM.finalize()
+        PFM.inherit_model(ParamObj, DataObj, EvalObj)
+        PFM.predict_microbiome()
+        PredObj = PFM.finalize()
+ 
+        writer.write_obj(ParamObj, ParamObj)
+        writer.write_obj(ParamObj, EvalObj)
+        writer.write_obj(ParamObj, DataObj)
+        writer.write_obj(ParamObj, PredObj)
         
-        Q = pred_dict["Q"].ravel()
-        x = pred_dict["xs_test"].ravel()
+    writer.close()
 
-#         fig, ax = plt.subplots(figsize=(8,8))
-#         plt.scatter(np.log10(x), np.log10(Q), s=3)
-
-#         ax.tick_params(direction='in', length=6, width=2, top=True, right=True, which='major')
-#         ax.tick_params(direction='in', length=3, width=0.5, top=True, right=True, which='minor')
-
-#         ax.set_xlabel("test xs", size=16)
-#         ax.set_ylabel("test Q", size=16)
-#         for axis in ['top', 'bottom', 'left', 'right']:
-#             ax.spines[axis].set_linewidth(2)
-#         for tick in ax.xaxis.get_ticklabels():
-#             tick.set_fontsize(16)
-#             tick.set_fontname('serif')
-#         for tick in ax.yaxis.get_ticklabels():
-#             tick.set_fontsize(16)
-#             tick.set_fontname('serif')
-#         plt.legend(loc = "lower right", prop={'size': 12}, framealpha=1)
-#         fig_title = "Prediction Scatter (nK=" + str(nK) + ", nL=" + str(nL) + ", alph=" + str(alph) + ") (log)"
-
-#         plt.title(fig_title, size=18);
-#         plt.xlim(-5, 0)
-#         plt.ylim(-5, 0)
-#         pointer_to_fig = plots_and_figs + "/plots_and_figs/nK=" + str(nK) + "/nL=" + str(nL) + "/"
-#         figname = "prediction_scatterplot_nK=" + str(nK) + "_nL=" + str(nL) + "_alph=" + str(alph) + ".jpg"
-#         plt.savefig(pointer_to_fig + figname)
-#         plt.close()
-        # Saving predictions
-        writer.create_pred_workbook(path_to_pred, pred_dict)
-        writer.write_pred_workbook(path_to_pred, pred_dict)
-
-
-def PDR_alph_range(path_to_data, model_type, further_spec, nK, nL, alph_arr, samp_freq, stop_search, max_iter):
+def PDR_alph_range(path_to_data, writer, nK, nL, alph_arr, num_runs, samp_freq, stop_search, max_iter):
     for alph in alph_arr:
         alph = float('%.3f' % alph)
-        PDR_algo(path_to_data, model_type, further_spec, nK, nL, alph, samp_freq, stop_search, max_iter)
+        PDR_algo(path_to_data, writer, nK, nL, alph, num_runs, samp_freq, stop_search, max_iter)
 
-alph_max = 0.3
-alph_div = 0.01
-alph_arr = np.arange(0, int(alph_max/alph_div) + 1) * alph_div
+#-------------------------------------------------------------------------------------------------------     
+
+alph_arr = [0.05]
 path_to_data = "/blue/pdixit/lukasherron/parallel_dim_reduction/data/datasets/bovine_data.mat"
-model_type='distribution_runs'
+model_type='test_run'
 further_spec=None
 
-num_L_components = 2
-num_K_components = 28
+nL = 2
+nK = 12
+num_runs = 2
 
-PDR_alph_range(path_to_data, model_type, further_spec, num_K_components, num_L_components, alph_arr, 100, 1000, 20000)
+path_to_data_dir = "/blue/pdixit/lukasherron/parallel_dim_reduction/data/"
+dataset_name = create_filetree(path_to_data_dir, path_to_data, model_type, further_spec=further_spec)
+fs = str(further_spec)
+if fs == "None":
+    fs = ""
+hdf_filename = model_type + "_nK=" + str(nK) + "_nL=" + str(nL) + "_h5file_.h5"
+path_to_hdf = os.path.join("/blue/pdixit/lukasherron/parallel_dim_reduction/data/bovine_data/", 
+                           model_type,
+                           "nK="+str(nK),
+                           "nL="+str(nL),
+                          hdf_filename)
+
+writer = DataWriter(path_to_hdf, mode="w")
+PDR_alph_range(path_to_data, writer, nK, nL, alph_arr, num_runs, samp_freq=500, stop_search=1000, max_iter=2000)

@@ -515,9 +515,9 @@ class DataLoader(object):
 
         return output_arr, nK_ref, nL_ref, alph_ref
 
-        def close(self):
-            """ Closes the h5file that the DataLoader reads. """
-            self.h5file.close()
+    def close(self):
+        """ Closes the h5file that the DataLoader reads. """
+        self.h5file.close()
 
 class Predict_From_Model(object):
 
