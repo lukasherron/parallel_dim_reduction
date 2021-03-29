@@ -3,15 +3,135 @@ from sklearn.decomposition import PCA
 from scipy.io import loadmat
 import numpy as np
 import pandas as pd
-from openpyxl import Workbook
-from openpyxl.utils.dataframe import dataframe_to_rows
-import openpyxl as pxl
 from sklearn.model_selection import train_test_split
 from scipy.ndimage import gaussian_filter1d
 import os
 import glob
 from tables import *
 import sys
+
+#------------------------------PYTABLES UTILITIES--------------------------------
+def get_dtype(data):
+    """Given a dict, generate a nested numpy dtype"""
+
+    if sys.version.startswith('3'):
+        unicode = str
+    fields = []
+    for (key, value) in data.items():
+        # make strings go to the next 64 character boundary
+        # pytables requires an 8 character boundary
+        if isinstance(value, unicode):
+            value += u' ' * (64 - (len(value) % 64))
+            # pytables does not support unicode
+            if isinstance(value, unicode):
+                value = value.encode('utf-8')
+        elif isinstance(value, str):
+            value += ' ' * (64 - (len(value) % 64))
+
+        if isinstance(value, dict):
+            fields.append((key, get_dtype(value)))
+        else:
+            value = np.array(value)
+            fields.append((key, '%s%s' % (value.shape, value.dtype)))
+    return np.dtype(fields)
+
+def unpack(row, base, data):
+    """ Unpacks th entries of a dict. """
+
+    for (key, value) in data.items():
+        new = base + key
+        if isinstance(value, dict):
+            unpack(row, new + '/', value)
+        else:
+            row[new] = value
+
+def add_row(tbl, data):
+    """Add a new row to a table based on the contents of a dict."""
+
+    row = tbl.row
+    for (key, value) in data.items():
+        if isinstance(value, dict):
+            unpack(row, key + '/', value)
+        else:
+            row[key] = value
+    row.append()
+    tbl.flush()
+
+def navigate_to_table(h5file, ArbObj, dic):
+    """ Navigates to a table based on a specified path and the reference string of a dict. If the 
+    groups along the path to the table do not exists or the table does not exist it is created.
+
+    In the future this function will be changed so that the path is specified by **kwargs."""
+
+    path_deconstruct = [dic[key] for key in dic.keys()]
+    path_construct = os.path.join(*path_deconstruct)
+    group_exists, table_exists = False, False
+    for group in h5file.walk_groups():
+        if path_construct == group._v_pathname:
+            group_exists = True
+            break
+
+    if group_exists is False:
+        group_path = "/"
+        for group_name in path_deconstruct:
+            try:
+                group = h5file.create_group(group_path, group_name, createparents=True)
+            except:
+                pass
+            group_path = os.path.join(group_path, group_name)
+
+    for table in h5file.list_nodes(group):
+        if ArbObj.obj_type == table._v_name:
+            table_exists = True
+            break
+
+    if table_exists is False:
+        dtype = get_dtype(ArbObj.__dict__)
+        table = h5file.create_table(group, ArbObj.obj_type, dtype)
+
+    return table
+
+
+#-------------------------------SYSTEM UTILITIES----------------------------------
+def get_str_from_name(filename, param_name):
+    _, filename = pop_path(filename)
+    i = filename.find(param_name)
+    j = len(param_name)
+    temp = filename[i+j+1:]
+    k = temp.find('_')
+    param_value = temp[0:k]
+    return param_value
+
+def pop_path(filename):
+    i = 0
+    path = ''
+    while i != -1:
+        i = filename.find("/")
+        path += filename[:i+1]
+        filename = filename[i+1:]
+    return path, filename
+
+def subdirs(path):
+    for entry in os.scandir(path):
+        if not entry.name.startswith('.') and entry.is_dir():
+            yield entry.name
+
+def find_files(path):
+    result = [y for x in os.walk(path) for y in glob.glob(os.path.join(x[0], '*.h5'))]     
+    return result
+
+def consolidate_data(path_to_root, path_to_h5):
+
+    files = list(find_files(path_to_root))
+    h5fw = open_file(path_to_h5, mode='w')
+    for h5name in files:
+        h5fr = open_file(h5name, mode='r') 
+        h5fr.root._f_copy_children(h5fw.root, recursive=True)
+        h5fw.flush()
+        h5fr.close()
+    h5fw.close()
+    
+#------------------------------------------------------------------------------
 
 
 def KL_divergence(arr_1, arr_2):
@@ -24,37 +144,6 @@ def KL_divergence(arr_1, arr_2):
     KL = np.nansum(np.nansum(np.multiply(arr_1, temp)))
 
     return KL
-
-def create_filetree(path_to_data_dir, path_to_dataset, model_type, further_spec=None):
-    """ creates filetree that will hold h5 filesystems starting from /dataset_name. 
-    In the future this function will be written in a more concise way."""
-
-    parent_dir = lambda: os.chdir(os.path.dirname(os.getcwd()))
-
-    def conditional(directory):
-        try:
-            os.chdir(directory)
-        except:
-            os.mkdir(directory)
-            os.chdir(directory)
-
-    cd = os.getcwd()
-    os.chdir(path_to_data_dir)
-    f = os.path.basename(path_to_dataset)
-    (name, ext) = os.path.splitext(f)
-    conditional(name)
-    conditional(model_type)
-    if further_spec is not None:
-        conditional(further_spec)
-    for k in range(6, 29):
-        conditional("nK=" + str(k))
-        for l in range(0, 11):
-            conditional("nL=" + str(l))
-            parent_dir()
-        parent_dir()
-    os.chdir(cd)
-    
-    return name
 
 class ObjFromDict(object):
     """ Maps key/value pairs of a dict to attributes of an object, with identifier 
@@ -187,100 +276,22 @@ class DataWriter(object):
 
     def __init__(self, path_to_h5, mode):
         self.h5file = open_file(path_to_h5, mode=mode)
-    
-    @staticmethod
-    def get_dtype(data):
-        """Given a dict, generate a nested numpy dtype"""
-        
-        if sys.version.startswith('3'):
-            unicode = str
-        fields = []
-        for (key, value) in data.items():
-            # make strings go to the next 64 character boundary
-            # pytables requires an 8 character boundary
-            if isinstance(value, unicode):
-                value += u' ' * (64 - (len(value) % 64))
-                # pytables does not support unicode
-                if isinstance(value, unicode):
-                    value = value.encode('utf-8')
-            elif isinstance(value, str):
-                value += ' ' * (64 - (len(value) % 64))
-
-            if isinstance(value, dict):
-                fields.append((key, get_dtype(value)))
-            else:
-                value = np.array(value)
-                fields.append((key, '%s%s' % (value.shape, value.dtype)))
-        return np.dtype(fields)
-
-    @staticmethod
-    def unpack(row, base, data):
-        """ Unpacks th entries of a dict. """
-        
-        for (key, value) in data.items():
-            new = base + key
-            if isinstance(value, dict):
-                unpack(row, new + '/', value)
-            else:
-                row[new] = value
-
-    @staticmethod
-    def add_row(tbl, data):
-        """Add a new row to a table based on the contents of a dict."""
-        
-        row = tbl.row
-        for (key, value) in data.items():
-            if isinstance(value, dict):
-                unpack(row, key + '/', value)
-            else:
-                row[key] = value
-        row.append()
-        tbl.flush()
-
-    def navigate_to_table(self, ArbObj, alph, model_type):
-        """ Navigates to a table based on a specified path and the reference string of a dict. If the 
-        groups along the path to the table do not exists or the table does not exist it is created.
-        
-        In the future this function will be changed so that the path is specified by **kwargs."""
-        
-        path_construct = "/alph=" + str(alph)
-        path_deconstruct = ["alph=" + str(alph)]
-        h5file = self.h5file
-        group_exists, table_exists = False, False
-        for group in h5file.walk_groups():
-            if path_construct == group._v_pathname:
-                group_exists = True
-                break
-
-        if group_exists is False:
-            for group_name in path_deconstruct:
-                group_path = "/"
-                try:
-                    group = h5file.create_group(group_path, group_name)
-                except:
-                    pass
-                group_path = os.path.join(group_path, group_name)
-
-        for table in h5file.list_nodes(group):
-            if ArbObj.obj_type == table._v_name:
-                table_exists = True
-                break
-
-        if table_exists is False:
-            dtype = self.get_dtype(ArbObj.__dict__)
-            table = h5file.create_table(group, ArbObj.obj_type, dtype)
-
-        return table
         
     def write_obj(self, ParamObj, ArbObj):
         """ Writes an object to a table specified by the obj_type reference attribute of the object."""
-        
-        alph = ParamObj.alph
-        runID = ParamObj.runID
-        model_type = ArbObj.obj_type
-        table = self.navigate_to_table(ArbObj, alph, model_type)
-        dtype = self.get_dtype(ArbObj.__dict__)
-        self.add_row(table, ArbObj.__dict__)
+        try:
+            dic = {"extra_spec": str(ParamObj.extra_spec),
+                   "nK": "nK=" + str(ParamObj.nK),
+                   "nL": "nL=" + str(ParamObj.nL),
+                   "alph": "alph=" + str(ParamObj.alph)}
+        except:
+            dic = {"nK": "nK=" + str(ParamObj.nK),
+                   "nL": "nL=" + str(ParamObj.nL),
+                   "alph": "alph=" + str(ParamObj.alph)}
+            
+        table = navigate_to_table(self.h5file, ArbObj, dic)
+        dtype = get_dtype(ArbObj.__dict__)
+        add_row(table, ArbObj.__dict__)
         
     def close(self):
         """ Saves and closes the file which the DataWriter object modifies."""
@@ -404,116 +415,7 @@ class DataLoader(object):
     def load_from_params(self, nK, nL, alph, entry, data_type):
         """ This function is deprecated and must be changed to be compatible with h5files. """
 
-        def subdirs(path):
-            for entry in os.scandir(path):
-                if not entry.name.startswith('.') and entry.is_dir():
-                    yield entry.name
-
-        def find_files(path):
-            result = [y for x in os.walk(path) for y in glob.glob(os.path.join(x[0], '*.xlsx'))]     
-            return result
-        
-        def pop_path(filename):
-            i = 0
-            while i != -1:
-                i = filename.find("/")
-                filename = filename[i+1:]
-            return filename
-        
-        def get_str_from_name(filename, param_name):
-            filename = pop_path(filename)
-            i = filename.find(param_name)
-            j = len(param_name)
-            temp = filename[i+j+1:]
-            k = temp.find('_')
-            param_value = temp[0:k]
-            return param_value
-
-        def remove_extra_files(filenames, param_dict):
-            for idx, key in list(enumerate(param_dict.keys())):
-                if param_dict[key] != 'all':
-                    x = param_dict[key]
-                    new_filenames = filenames.copy()
-                    for name in filenames:
-                        param = get_str_from_name(name, key)
-                        if param != str(x):
-                            new_filenames.remove(name)
-                    filenames = new_filenames
-            return filenames
-
-        def get_entries(filenames, entry):
-            i = 0
-            alph_arr, nK_arr, nL_arr, data_arr, param_arr = [], [], [], [], []
-            for name in filenames:
-                alph = get_str_from_name(name, 'alph')
-                alph_arr.append(float(alph))
-                nK = get_str_from_name(name, 'nK')
-                nK_arr.append(int(nK))
-                nL = get_str_from_name(name, 'nL')
-                nL_arr.append(int(nL))
-                param_arr.append([int(nK), int(nL), float(alph)])
-
-                wb = pxl.load_workbook(name, read_only=True)
-                sheetnames = wb.sheetnames
-
-                for sheetname in sheetnames:
-                    active_ws = wb[sheetname]
-                    dic = load_sheet_rows(active_ws)
-                    for key in list(dic.keys()):
-                        if key == entry:
-                            [[data]] = dic[key]
-                data_arr.append(data)
-                
-                i += 1
-                if i % 10 == 0:
-                    print("i = ", i)
-
-            alph_set = set(alph_arr)
-            nK_set = set(nK_arr)
-            nL_set = set(nL_arr)
-
-            return alph_set,  nK_set, nL_set, data_arr, param_arr
-            
-
-        param_dict = {"nK": nK, "nL": nL, "alph": alph}
-        n_param = 0
-        all_entries, particulars = [], []
-        for idx, key in list(enumerate(param_dict.keys())):
-            if param_dict[key] == "all":
-                n_param += 1
-                all_entries.append(key)
-            else:
-                particulars.append(key)
-
-        path_prefix = "/blue/pdixit/lukasherron/parallel_dim_reduction/data/" + data_type + "/"
-        navigation_dict = {key: None for key in param_dict.keys()}
-        navigation_dict["nK"] = list(subdirs(path_prefix))
-        navigation_dict["nL"] = list(subdirs(path_prefix + navigation_dict["nK"][0]))
-        all_filenames = find_files(path_prefix)
-        print(len(all_filenames))
-        filenames = remove_extra_files(all_filenames, param_dict)
-        print(len(filenames))
-
-        alph_set, nK_set, nL_set, data_arr, param_arr = get_entries(filenames, entry)
-        alph_ref = np.sort(list(alph_set))
-        nK_ref = np.sort(list(nK_set))
-        nL_ref = np.sort(list(nL_set))
-        output_arr = [[[[] for _ in range(len(alph_ref))] for _ in range(len(nL_ref))] for _ in range(len(nK_ref))]
-
-        for idx, params in list(enumerate(param_arr)):
-
-            ([idx_nK],) = np.where(nK_ref == params[0])
-            ([idx_nL],) = np.where(nL_ref == params[1])
-            ([idx_alph],) = np.where(alph_ref == params[2])
-
-            output_arr[idx_nK][idx_nL][idx_alph] = data_arr[idx]
-            
-        output_arr = np.squeeze(np.array(output_arr))
-        output_name = entry + "_nK=" + nK + "_nL=" + nL + "_alph=" + alph + "_.npy"
-        print(output_name)
-        np.save(output_name, output_arr)
-
-        return output_arr, nK_ref, nL_ref, alph_ref
+        pass
 
     def close(self):
         """ Closes the h5file that the DataLoader reads. """
