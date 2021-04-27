@@ -9,40 +9,66 @@ import warnings
 
 warnings.filterwarnings("ignore", category=FutureWarning)
 warnings.filterwarnings("ignore", category=NaturalNameWarning)
-warnings.filterwarnings("ignore", category=NaturalNameWarning)
+warnings.filterwarnings("ignore", category=FlavorWarning)
 
-def PDR_algo(path_to_data, writer, extraspec, nK, nL, alph, num_runs, samp_freq, stop_search, max_iter):
+def PDR_algo(paths_to_data, writer, extraspec, nK, nL, alph, num_runs, samp_freq, stop_search, max_iter,
+             farm_train, farm_test):
     
+    [path_to_metadata, path_to_xs] = paths_to_data
     for runID in range(num_runs):
         
         # LOADING DATA
         loader = DataLoader()
-        xs, metx, labels = loader.load_data(path_to_data)
-        train_size = 0.75
-        test_size = 1 - train_size
-        val_size = 0
-        idx_train, idx_test, idx_val = loader.split_data(test_size=test_size, val_size=val_size)
-        metz_train, metz_test, metz_val = loader.preprocess_metadata(metx, idx_train, idx_test, idx_val)
+        if farm_train == farm_test:
+            
+            metx, labels, idx = loader.load_csv(path_to_metadata, farm=farm_train)
+            xs, _, _ = loader.load_csv(path_to_xs, idx=idx)
+            train_size = 0.80
+            test_size = 0.20
+            val_size = 0
+            [loader.nSamp , nMet] = metx.shape
+            idx_train, idx_test, idx_val = loader.split_data(test_size=test_size, val_size=val_size)
+            metz_train, metz_test, metz_val = loader.preprocess_metadata(metx, idx_train, idx_test, idx_val)
+            xs_test = xs[idx_test]
+            xs_val = xs[idx_val]
+            xs_train = xs[idx_train]
+            nSamp = loader.nSamp
+            
+        else:
+            
+            metx_train, labels, idx = loader.load_csv(path_to_metadata, farm=farm_train)
+            xs_train, _, _ = loader.load_csv(path_to_xs, idx=idx)
+            metx_test, labels, idx = loader.load_csv(path_to_metadata, farm=farm_test)
+            xs_test, _, _ = loader.load_csv(path_to_xs, idx=idx)
+            idx_train = np.arange(len(metx_train))
+            idx_test = np.arange(len(metx_test))
+            idx_val = []
+            metz_train, _, _ = loader.preprocess_metadata(metx_train, idx_train, [], idx_val)
+            _, metz_test, _ = loader.preprocess_metadata(metx_test, idx_test, idx_test, idx_val)
+            xs_val = [] 
+            metz_val = []
+            nSamp = np.nan
 
-        # INITIALIZING DICTS AND OBJECTS
-        param_dict = {"nK": nK, "alph": alph, "etaZ": 3e-5, "etaT": 3e-5, "etaC": 1e-5, "nPC": nK - nL, "nL": nL,
-                      "nMet": loader.nMet, "nD": xs.shape[1], "nSamp": loader.nSamp, "mu_met": loader.mu_met,
-                      "sg_met": loader.sg_met, "runID": runID, "extra_spec": extraspec}
+        [_, nMet] = metz_train.shape
         
+        # INITIALIZING DICTS AND OBJECTS
+        param_dict = {"nK": nK, "alph": alph, "etaZ": 3e-5, "etaT": 3e-5, "etaC": 3e-5, "nPC": nK - nL, "nL": nL,
+                      "nMet": nMet, "nD": xs_test.shape[1], "nSamp": nSamp, "mu_met": loader.mu_met,
+                      "sg_met": loader.sg_met, "runID": runID, "extra_spec": extraspec}
         if param_dict["extra_spec"] is None:
             param_dict.pop("extra_spec")
 
-        eval_dict = dict(e1=np.nan, e2=np.nan, KL_final=np.nan, KL_train=[0], KL_val=[0])
+        eval_dict = {"e1": np.nan, "e2": np.nan, "KL_final": np.nan, "KL_train": [0], "KL_val": [], "spearman": [], "pearson":  []}
 
-        grad_dict = dict(grz=np.nan, grthet=np.nan, grc=np.nan)
+        grad_dict = {"grz": np.nan, "grthet": np.nan, "grc": np.nan}
 
-        data_dict = {"xs_train": xs[idx_train], "xs_test": xs[idx_test], "xs_val": xs[idx_val], "Q": np.nan,
+        data_dict = {"xs_train": xs_train, "xs_test": xs_test, "xs_val": xs_val, "Q": np.nan,
                      "metz_train": metz_train, "metz_test": metz_test, "metz_val": metz_val, "C": np.nan, "Z": None,
                      "Zcon": np.nan, "Zfr": np.nan,
                      "thet": np.random.random(size=(param_dict["nPC"] + param_dict["nL"], param_dict["nD"])),
-                     "labels": labels, "idx_train": idx_train, "idx_test": idx_test, "idx_val": idx_val}
+                     "metx_labels": labels, "idx_train": idx_train, "idx_test": idx_test, "idx_val": idx_val}
         
-        
+
         ParamObj = ObjFromDict(param_dict, "param")
         EvalObj = ObjFromDict(eval_dict, "eval")
         GradObj = ObjFromDict(grad_dict, "grad")
@@ -71,11 +97,17 @@ def PDR_algo(path_to_data, writer, extraspec, nK, nL, alph, num_runs, samp_freq,
         writer.write_obj(ParamObj, EvalObj)
         writer.write_obj(ParamObj, DataObj)
         writer.write_obj(ParamObj, PredObj)
+        print("pearson", PredObj.pearson)
         
-def PDR_alph_range(path_to_data, writer, extraspec, nK, nL, alph_arr, num_runs, samp_freq, stop_search, max_iter):
+        if farm_train != farm_test:
+            break
+        
+def PDR_alph_range(paths_to_data, writer, extraspec, nK, nL, alph_arr, num_runs, samp_freq, stop_search, max_iter, 
+                   farm_train=None, farm_test=None):
     for alph in alph_arr:
         alph = float('%.3f' % alph)
-        PDR_algo(path_to_data, writer, extraspec, nK, nL, alph, num_runs, samp_freq, stop_search, max_iter)
+        PDR_algo(paths_to_data, writer, extraspec, nK, nL, alph, num_runs, samp_freq, stop_search, max_iter,
+                 farm_train, farm_test)
         
 def init_file_struct(path_to_dataset, naming_dict):
     parent_dir = lambda: os.chdir(os.path.dirname(os.getcwd()))
@@ -103,6 +135,7 @@ def init_file_struct(path_to_dataset, naming_dict):
                                hdf_filename)
 
     p, f = pop_path(path_to_hdf)
+    print(p)
     os.makedirs(p, exist_ok=True)
     
     return path_to_hdf
@@ -113,21 +146,27 @@ def step_arr(start, stop, step):
         arr[i] = float('%.3f' % arr[i])
     return arr
 
-#---------------------------------------------------------------------
+# alph_arr = step_arr(0.05, 0.30, 0.05)
+alph_arr = [0.05]
+path_to_metadata = "/blue/pdixit/lukasherron/parallel_dim_reduction/data/datasets/bovine_metadata.csv"
+path_to_xs = "/blue/pdixit/lukasherron/parallel_dim_reduction/data/datasets/bovine_microbiome.csv"
+paths_to_data = [path_to_metadata, path_to_xs]
 
-alph_arr = step_arr(0.05, 0.30, 0.01)
 nL = 2
-nK = 11
-num_runs = 2
+nK = 12
+num_runs = 10
+farm_train = 2
+farm_test = 3
 
 naming_dict = {"model_type": 'testrun',
-               "extra_spec": None,
+               "extra_spec": "farm_train="+ str(farm_train) + "_farm_test=" + str(farm_test),
                "nK": "nK=" + str(nK),
                "nL": "nL=" + str(nL)}
 
-path_to_dataset = "/blue/pdixit/lukasherron/parallel_dim_reduction/data/datasets/bovine_data.mat"
-path_to_hdf = init_file_struct(path_to_dataset, naming_dict)
+path_to_hdf = init_file_struct(path_to_metadata, naming_dict)
 
 writer = DataWriter(path_to_hdf, mode="w")
-PDR_alph_range(path_to_dataset, writer, naming_dict["extra_spec"], nK, nL, alph_arr, num_runs, 500, 1000, 2000)
+
+PDR_alph_range(paths_to_data, writer, naming_dict["extra_spec"], nK, nL, alph_arr, num_runs, 5000, 55000, 100000,
+               farm_train=farm_train, farm_test=farm_test)
 writer.close()

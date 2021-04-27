@@ -190,6 +190,9 @@ class Parallel_Dimensionality_Reduction(object):
         self.DataObj.Z -= self.ParamObj.etaZ * self.GradObj.grz
         self.DataObj.thet -= self.ParamObj.etaT * self.GradObj.thet
         self.DataObj.C -= self.ParamObj.etaC * self.GradObj.grc
+        
+    def TMI_TMI_gradient_update(self):
+        pass
 
     def eval_training_performance(self):
         """ Evaluates the KL divergence and relative errors between the training model. """
@@ -201,6 +204,7 @@ class Parallel_Dimensionality_Reduction(object):
         self.EvalObj.KL_train = KL_divergence(self.DataObj.xs_train, \
                                               self.DataObj.Q)/len(self.DataObj.idx_train)
         self.EvalObj.e2 = (1 - self.ParamObj.alph) * self.EvalObj.KL_train
+        
 
     def step(self):
         """ One iteration of the gradient descent algorithm."""
@@ -223,19 +227,26 @@ class Parallel_Dimensionality_Reduction(object):
             i += 1
             if i % samp_freq == 0:
                 self.eval_training_performance()
+                if i > stop_search:
+                    if min(np.array(self.DataObj.Q.ravel())) < 1e-5:
+                        break
                 if validate:
-                    PFM = Predict_From_Model(PredObj, DataObj, ParamObj)
+                    PFM = Predict_From_Model()
+                    PFM.inherit_model(self.ParamObj, self.DataObj, self.EvalObj)
                     PFM.predict_microbiome(validate=validate)
-                    self.EvalObj.KL_val.append(PFM.PredObj.KL)
+                    PredObj = PFM.finalize()
+                    self.EvalObj.KL_val.append(PredObj.KL)
                     KL_1 = np.array(self.EvalObj.KL_val)
                     KL_2 = np.array(self.EvalObj.KL_train)
-                    KL_tot = (KL_1)[int((stop_search - samp_freq) / samp_freq):]
+
 
         self.eval_training_performance()
         if validate:
-            PFM = Predict_From_Model(PredObj, DataObj, ParamObj)
+            PFM = Predict_From_Model()
+            PFM.inherit_model(self.ParamObj, self.DataObj, self.EvalObj)
             PFM.predict_microbiome(validate=validate)
-            self.EvalObj.KL_val.append(PFM.PredObj.KL)
+            PredObj = PFM.finalize()
+            self.EvalObj.KL_val.append(PredObj.KL)
 
     def finalize(self):
         """ Returns objects. Always call finalize to make the changes made to objects from the 
@@ -314,7 +325,7 @@ class DataLoader(object):
             self.h5file = open_file(path, mode=mode)
             self.path = path            
 
-    def load_data(self, path):
+    def load_mat(self, path):
         """Loads the dataset located at the specified path. Currently the dataset must be in .mat 
         format.
         
@@ -326,13 +337,35 @@ class DataLoader(object):
         self.mat = mat
         xs = mat['xs'].toarray()
         metx = mat["metx"]
-        labels = [mat["metnames"][0][i][0] for i in range(len(mat["metnames"][0]))]
+        met_labels = [mat["metnames"][0][i][0] for i in range(len(mat["metnames"][0]))]
+#         xs_labels = [mat["xs"][0][i][0] for i in range(len(mat["xs"][0]))]
         [nSamp, nMet] = metx.shape
 
         self.nMet = nMet
         self.nSamp = nSamp
 
-        return xs, metx, labels
+        return xs, metx, met_labels
+    
+    def load_csv(self, path, species=None, farm=None, idx=None):
+        
+        df = pd.read_csv(path)
+        if species is not None:
+            df = df.loc[df['species'] == species]
+        if farm is not None:
+            df = df.loc[df['farm number'] == farm]
+        if idx is not None:
+            df = df.loc[idx]
+        
+        indices = list(df.index)
+        labels = list(df.columns)
+        try:
+            df = df.drop(columns=['species', 'farm number'])
+        except: 
+            None
+
+        data = df.to_numpy()
+        
+        return data, labels, indices
 
     def split_data(self, test_size, val_size):
         """ Splits data into testing, training, and validation sets. test_size and val_size are the 
@@ -370,7 +403,7 @@ class DataLoader(object):
 
         return metz_train, metz_test, metz_val
     
-    def load_obj(self, nK, nL, alph, obj_type, runIDs=all, entries=all):
+    def load_obj(self, nK, nL, alph, obj_type, runIDs=all, entries=all, extra_spec=None):
         """ Loads an object from an h5file. nK, nL, and alph specify the parameters of the model. 
         The table in the h5file is specified by obj_type which can be "param", "data", "eval", or 
         "pred". RunIDs handles the case of multiple model runs while entries enables a single entry 
@@ -382,33 +415,39 @@ class DataLoader(object):
         h5file will be added.
         """
         
+        path_construct = "/"
+        if extra_spec is not None:
+            path_construct = os.path.join(path_construct, extra_spec)
         if self.path.find("consolidated") == -1:
-            path_construct = os.path.join("/", "alph=" + str(alph), obj_type)
-            data_table = self.h5file.get_node(path_construct)
-            data = {}
-            labels = data_table.colnames
-            if runIDs is not all:
-                i = 0
-                for runID in runIDs:
-                    i += 1
-                    if entries is not all:
-                        for entry in entries:
-                            label_idx = labels.index(entry)
-                            if i == 1:
-                                data[labels[label_idx]] = []
-                            data[labels[label_idx]].append(data_table[runID][label_idx])
-                    else:
-                        values = [x for x in data_table[runID]]
-                        for idx, label in enumerate(labels):
-                            data[label] = values[idx]
-            else:
+            path_construct = os.path.join(path_construct, "nK=" + str(nK), "nL=" + str(nL), "alph=" + str(alph), obj_type)
+        else:
+            path_construct = os.path.join(path_construct, "nK=" + str(nK), "nL=" + str(nL), "alph=" + str(alph))
+                
+        data_table = self.h5file.get_node(path_construct)
+        data = {}
+        labels = data_table.colnames
+        if runIDs is not all:
+            i = 0
+            for runID in runIDs:
+                i += 1
                 if entries is not all:
                     for entry in entries:
                         label_idx = labels.index(entry)
-                        data[labels[label_idx]] = [x[label_idx] for x in data_table.iterrows()]
+                        if i == 1:
+                            data[labels[label_idx]] = []
+                        data[labels[label_idx]].append(data_table[runID][label_idx])
                 else:
+                    values = [x for x in data_table[runID]]
                     for idx, label in enumerate(labels):
-                        data[label] = [x[idx] for x in data_table.iterrows()]
+                        data[label] = values[idx]
+        else:
+            if entries is not all:
+                for entry in entries:
+                    label_idx = labels.index(entry)
+                    data[labels[label_idx]] = [x[label_idx] for x in data_table.iterrows()]
+            else:
+                for idx, label in enumerate(labels):
+                    data[label] = [x[idx] for x in data_table.iterrows()]
         return data
         
 
@@ -421,6 +460,7 @@ class DataLoader(object):
         """ Closes the h5file that the DataLoader reads. """
         self.h5file.close()
 
+
 class Predict_From_Model(object):
 
     def __init__(self):
@@ -431,6 +471,8 @@ class Predict_From_Model(object):
             "Zfr": np.nan,
             "C": np.nan,
             "KL": np.nan,
+            "pearson": np.nan,
+            "spearman": np.nan
         }
 
         self.ParamObj = None
@@ -509,7 +551,7 @@ class Predict_From_Model(object):
 
         C = self.DataObj.C
         Z_train = self.DataObj.Z
-        thet =self.DataObj.thet
+        thet = self.DataObj.thet
 
         Z_pred = metz_test @ np.linalg.pinv(self.DataObj.C)
         if self.ParamObj.nL != 0:
@@ -523,6 +565,14 @@ class Predict_From_Model(object):
         norms = self.PredObj.Q.sum(1)
         self.PredObj.Q = np.divide(self.PredObj.Q.T, norms, where=norms != 0).T
         self.PredObj.KL = KL_divergence(test_xs, self.PredObj.Q)/len(idx_test)
+        df_Q = pd.DataFrame(self.PredObj.Q.T)
+        df_xs = pd.DataFrame(test_xs.T)
+        p_xcorr = df_Q.corrwith(df_xs, method = "pearson")
+        average_p_xcorr = sum(p_xcorr)/len(p_xcorr)
+        s_xcorr = df_Q.corrwith(df_xs, method = "spearman")
+        average_s_xcorr = sum(s_xcorr)/len(s_xcorr)
+        self.PredObj.pearson = average_p_xcorr
+        self.PredObj.spearman = average_s_xcorr
         
     def predict_metadata(self, validate=False):
         """ Predicts the metadata from corresponding microbiome samples using C, Z, and thet."""
@@ -552,4 +602,5 @@ class Predict_From_Model(object):
         """ Returns objects. Always call finalize to make the changes made to objects from the 
         PredictFromModel class persistent."""
         return self.PredObj
+        
         
