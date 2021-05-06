@@ -205,6 +205,15 @@ class Parallel_Dimensionality_Reduction(object):
                                               self.DataObj.Q)/len(self.DataObj.idx_train)
         self.EvalObj.e2 = (1 - self.ParamObj.alph) * self.EvalObj.KL_train
         
+        PFM = Predict_From_Model()
+        PFM.inherit_model(self.ParamObj, self.DataObj, self.EvalObj)
+        PFM.predict_microbiome(validate=False)
+        PredObj = PFM.finalize()
+        self.EvalObj.pearson.append(PredObj.pearson)
+        self.EvalObj.spearman.append(PredObj.spearman)
+#         print("pearson", PredObj.pearson)
+#         print("spearman", PredObj.spearman)
+        
 
     def step(self):
         """ One iteration of the gradient descent algorithm."""
@@ -513,7 +522,7 @@ class Predict_From_Model(object):
 
         muZ = np.mean(Z_train, axis=0).T
         muZ = muZ[:, np.newaxis]
-        z2 = Z_pred[:, :nPC]  
+        z2 = Z_pred[:, :nPC]
         mu2 = muZ[:nPC]
         mu1 = muZ[nPC:]
         covZ = np.cov(Z_train.T) 

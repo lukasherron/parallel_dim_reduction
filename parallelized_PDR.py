@@ -154,19 +154,22 @@ paths_to_data = [path_to_metadata, path_to_xs]
 
 nL = 2
 nK = 12
-num_runs = 10
-farm_train = 2
-farm_test = 3
+num_runs = 1
+test_arr = [4]
+train_arr = [5]
+for ftest in test_arr:
+    for ftrain in train_arr:
+        farm_train = ftrain
+        farm_test = ftest
 
-naming_dict = {"model_type": 'testrun',
-               "extra_spec": "farm_train="+ str(farm_train) + "_farm_test=" + str(farm_test),
-               "nK": "nK=" + str(nK),
-               "nL": "nL=" + str(nL)}
+        naming_dict = {"model_type": 'crossfarm',
+                       "extra_spec": "farmtrain="+ str(farm_train) + "_farmtest=" + str(farm_test),
+                       "nK": "nK=" + str(nK),
+                       "nL": "nL=" + str(nL)}
 
-path_to_hdf = init_file_struct(path_to_metadata, naming_dict)
+        path_to_hdf = init_file_struct(path_to_metadata, naming_dict)
 
-writer = DataWriter(path_to_hdf, mode="w")
-
-PDR_alph_range(paths_to_data, writer, naming_dict["extra_spec"], nK, nL, alph_arr, num_runs, 5000, 55000, 100000,
-               farm_train=farm_train, farm_test=farm_test)
-writer.close()
+        writer = DataWriter(path_to_hdf, mode="w")
+        PDR_alph_range(paths_to_data, writer, naming_dict["extra_spec"], nK, nL, alph_arr, num_runs, 1000, 140000, 150000,
+                       farm_train=farm_train, farm_test=farm_test)
+        writer.close()
